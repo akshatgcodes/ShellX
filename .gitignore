@@ -1,0 +1,8 @@
+# Build artifacts
+shellx
+*.o
+*.out
+*.dSYM/
+
+# Editor/OS cruft
+.DS_Store
