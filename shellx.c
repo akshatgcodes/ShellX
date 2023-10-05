@@ -5,9 +5,12 @@
  *   - a REPL that reads, tokenizes, and executes commands
  *   - builtins: cd, pwd, exit
  *   - external commands via fork() + execvp() + waitpid()
+ *   - SIGINT handling so Ctrl+C does not kill the shell itself
+ *   - up-arrow history scrolling via GNU readline (or macOS's
+ *     readline-compatible libedit, whichever the system provides)
  *
  * Build:
- *   gcc shellx.c -o shellx -Wall
+ *   gcc shellx.c -o shellx -Wall -lreadline
  */
 
 #include <stdio.h>
@@ -15,12 +18,19 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <errno.h>
+#include <ctype.h>
 #include <limits.h>
+
+#include <readline/readline.h>
+#include <readline/history.h>
 
 #define SHELLX_TOK_BUFSIZE 64
 #define SHELLX_TOK_DELIM " \t\r\n\a"
 #define SHELLX_MAX_LINE 4096
+
+static volatile pid_t foreground_child = -1;
 
 /* ------------------------------------------------------------------ */
 /* Parsing                                                             */
@@ -66,6 +76,35 @@ static void free_tokens(char **tokens) {
         free(tokens[i]);
     }
     free(tokens);
+}
+
+/* ------------------------------------------------------------------ */
+/* Signal handling                                                     */
+/* ------------------------------------------------------------------ */
+
+/* SIGINT handler for the shell process itself. When Ctrl+C is pressed
+ * at an empty prompt (no foreground child running), we simply swallow
+ * the signal and let readline redraw the prompt on a fresh line - the
+ * shell process is never killed by Ctrl+C. When a foreground child is
+ * running, the terminal's Ctrl+C also delivers SIGINT to that child
+ * directly, and because the child resets SIGINT to its default
+ * disposition right after fork(), the child dies as expected while
+ * the shell's own handler here just no-ops for the parent.
+ */
+static void sigint_handler(int signo) {
+    (void)signo;
+    if (foreground_child == -1) {
+        write(STDOUT_FILENO, "\n", 1);
+    }
+}
+
+static void setup_signal_handling(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    sigaction(SIGINT, &sa, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -124,6 +163,9 @@ static int launch_external(char **args) {
     pid_t pid = fork();
 
     if (pid == 0) {
+        signal(SIGINT, SIG_DFL);
+        signal(SIGQUIT, SIG_DFL);
+
         if (execvp(args[0], args) == -1) {
             fprintf(stderr, "shellx: %s: %s\n", args[0], strerror(errno));
         }
@@ -131,8 +173,13 @@ static int launch_external(char **args) {
     } else if (pid < 0) {
         fprintf(stderr, "shellx: fork failed: %s\n", strerror(errno));
     } else {
+        foreground_child = pid;
         int status;
-        waitpid(pid, &status, 0);
+        pid_t w;
+        do {
+            w = waitpid(pid, &status, 0);
+        } while (w == -1 && errno == EINTR);
+        foreground_child = -1;
     }
     return 1;
 }
@@ -157,29 +204,33 @@ static int execute(char **args) {
 /* ------------------------------------------------------------------ */
 
 int main(void) {
+    setup_signal_handling();
+
     printf("ShellX - a minimal Unix shell. Type 'exit' to quit.\n");
 
-    char line[SHELLX_MAX_LINE];
-    for (;;) {
-        printf("shellx> ");
-        fflush(stdout);
-        if (!fgets(line, sizeof(line), stdin)) {
-            printf("\n");
-            break;
-        }
-
-        size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-            line[len - 1] = '\0';
+    char *line;
+    while ((line = readline("shellx> ")) != NULL) {
+        char *start = line;
+        while (*start && isspace((unsigned char)*start)) start++;
+        size_t len = strlen(start);
+        while (len > 0 && isspace((unsigned char)start[len - 1])) {
+            start[len - 1] = '\0';
             len--;
         }
 
-        if (line[0] == '\0') continue;
+        if (start[0] == '\0') {
+            free(line);
+            continue;
+        }
 
-        char **args = tokenize_line(line);
+        add_history(start);
+        char **args = tokenize_line(start);
         execute(args);
         free_tokens(args);
+
+        free(line);
     }
 
+    printf("\n");
     return 0;
 }
