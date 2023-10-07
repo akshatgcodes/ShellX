@@ -6,6 +6,7 @@
  *   - builtins: cd, pwd, exit
  *   - external commands via fork() + execvp() + waitpid()
  *   - SIGINT handling so Ctrl+C does not kill the shell itself
+ *   - persistent command history with timestamps in ~/.shellx_history.txt
  *   - up-arrow history scrolling via GNU readline (or macOS's
  *     readline-compatible libedit, whichever the system provides)
  *
@@ -19,6 +20,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <signal.h>
+#include <time.h>
 #include <errno.h>
 #include <ctype.h>
 #include <limits.h>
@@ -30,7 +32,70 @@
 #define SHELLX_TOK_DELIM " \t\r\n\a"
 #define SHELLX_MAX_LINE 4096
 
+static char history_path[PATH_MAX];
 static volatile pid_t foreground_child = -1;
+
+/* ------------------------------------------------------------------ */
+/* History: persistent, timestamped, file-backed                      */
+/* ------------------------------------------------------------------ */
+
+/* Build the path to ~/.shellx_history.txt once at startup. */
+static void init_history_path(void) {
+    const char *home = getenv("HOME");
+    if (!home) home = ".";
+    snprintf(history_path, sizeof(history_path), "%s/.shellx_history.txt", home);
+}
+
+/* Append a single command line to the history file with a timestamp,
+ * and register it with readline so it is recalled with the up arrow
+ * for the rest of this session. Blank lines are not logged. */
+static void log_history(const char *line) {
+    if (!line || line[0] == '\0') return;
+
+    const char *p = line;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (*p == '\0') return;
+
+    add_history(line);
+
+    FILE *f = fopen(history_path, "a");
+    if (!f) return; /* non-fatal: history logging failing shouldn't crash the shell */
+
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    char timestamp[64];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", &tm_now);
+
+    fprintf(f, "[%s] %s\n", timestamp, line);
+    fclose(f);
+}
+
+/* Load ~/.shellx_history.txt at startup and feed each previously logged
+ * command into readline's in-memory history, so the up arrow can recall
+ * commands from earlier sessions too. */
+static void load_history_file(void) {
+    FILE *f = fopen(history_path, "r");
+    if (!f) return;
+
+    char line[SHELLX_MAX_LINE];
+    while (fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+
+        char *cmd = line;
+        if (line[0] == '[') {
+            char *close = strchr(line, ']');
+            if (close && *(close + 1) == ' ') {
+                cmd = close + 2;
+            }
+        }
+        if (cmd[0] != '\0') {
+            add_history(cmd);
+        }
+    }
+    fclose(f);
+}
 
 /* ------------------------------------------------------------------ */
 /* Parsing                                                             */
@@ -204,7 +269,10 @@ static int execute(char **args) {
 /* ------------------------------------------------------------------ */
 
 int main(void) {
+    init_history_path();
     setup_signal_handling();
+
+    load_history_file();
 
     printf("ShellX - a minimal Unix shell. Type 'exit' to quit.\n");
 
@@ -223,7 +291,7 @@ int main(void) {
             continue;
         }
 
-        add_history(start);
+        log_history(start);
         char **args = tokenize_line(start);
         execute(args);
         free_tokens(args);
