@@ -7,11 +7,14 @@
  *   - external commands via fork() + execvp() + waitpid()
  *   - SIGINT handling so Ctrl+C does not kill the shell itself
  *   - persistent command history with timestamps in ~/.shellx_history.txt
+ *   - "#keyword" fuzzy history search
  *   - up-arrow history scrolling via GNU readline (or macOS's
  *     readline-compatible libedit, whichever the system provides)
  *
  * Build:
  *   gcc shellx.c -o shellx -Wall -lreadline
+ *
+ * See README.md for full details and design rationale.
  */
 
 #include <stdio.h>
@@ -52,6 +55,7 @@ static void init_history_path(void) {
 static void log_history(const char *line) {
     if (!line || line[0] == '\0') return;
 
+    /* Skip logging pure whitespace. */
     const char *p = line;
     while (*p && isspace((unsigned char)*p)) p++;
     if (*p == '\0') return;
@@ -59,7 +63,10 @@ static void log_history(const char *line) {
     add_history(line);
 
     FILE *f = fopen(history_path, "a");
-    if (!f) return; /* non-fatal: history logging failing shouldn't crash the shell */
+    if (!f) {
+        /* Non-fatal: history logging failing shouldn't crash the shell. */
+        return;
+    }
 
     time_t now = time(NULL);
     struct tm tm_now;
@@ -83,6 +90,8 @@ static void load_history_file(void) {
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
 
+        /* Strip the leading "[timestamp] " prefix, if present, before
+         * handing the bare command to readline's history. */
         char *cmd = line;
         if (line[0] == '[') {
             char *close = strchr(line, ']');
@@ -95,6 +104,42 @@ static void load_history_file(void) {
         }
     }
     fclose(f);
+}
+
+/* "#keyword" fuzzy search: scan ~/.shellx_history.txt from the bottom
+ * (most recent first) and return the most recent command whose text
+ * contains "keyword" as a substring. Returns a newly malloc'd string
+ * (caller must free) or NULL if nothing matched. */
+static char *find_history_match(const char *keyword) {
+    FILE *f = fopen(history_path, "r");
+    if (!f) return NULL;
+
+    /* The history file is append-only and can grow, but for a learning
+     * shell it's small enough to just read every line and remember the
+     * last match seen; simple and correct. */
+    char line[SHELLX_MAX_LINE];
+    char *match = NULL;
+
+    while (fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+
+        char *cmd = line;
+        if (line[0] == '[') {
+            char *close = strchr(line, ']');
+            if (close && *(close + 1) == ' ') {
+                cmd = close + 2;
+            }
+        }
+        if (cmd[0] == '\0') continue;
+
+        if (strstr(cmd, keyword) != NULL) {
+            free(match);
+            match = strdup(cmd);
+        }
+    }
+    fclose(f);
+    return match;
 }
 
 /* ------------------------------------------------------------------ */
@@ -149,16 +194,24 @@ static void free_tokens(char **tokens) {
 
 /* SIGINT handler for the shell process itself. When Ctrl+C is pressed
  * at an empty prompt (no foreground child running), we simply swallow
- * the signal and let readline redraw the prompt on a fresh line - the
- * shell process is never killed by Ctrl+C. When a foreground child is
- * running, the terminal's Ctrl+C also delivers SIGINT to that child
- * directly, and because the child resets SIGINT to its default
- * disposition right after fork(), the child dies as expected while
- * the shell's own handler here just no-ops for the parent.
+ * the signal and let readline redraw the prompt on a fresh line -
+ * the shell process is never killed by Ctrl+C.
+ *
+ * When a foreground child IS running, the terminal's Ctrl+C also
+ * delivers SIGINT to that child directly (it's in the same process
+ * group / foreground), and because the child resets SIGINT to its
+ * default disposition right after fork(), the child dies as expected
+ * while the shell's own handler here just no-ops for the parent.
  */
 static void sigint_handler(int signo) {
     (void)signo;
+    /* Nothing to do for the parent process itself. readline aborts the
+     * line currently being edited and redisplays the prompt on a new
+     * line once this handler returns, so the shell simply keeps going. */
     if (foreground_child == -1) {
+        /* No child running: move to a fresh line so the next prompt
+         * doesn't get printed in the middle of whatever the user had
+         * typed. readline redraws the prompt right after this. */
         write(STDOUT_FILENO, "\n", 1);
     }
 }
@@ -228,6 +281,9 @@ static int launch_external(char **args) {
     pid_t pid = fork();
 
     if (pid == 0) {
+        /* Child: restore default SIGINT/SIGQUIT behavior so Ctrl+C
+         * kills a runaway foreground command instead of being
+         * swallowed like it is in the shell itself. */
         signal(SIGINT, SIG_DFL);
         signal(SIGQUIT, SIG_DFL);
 
@@ -238,6 +294,9 @@ static int launch_external(char **args) {
     } else if (pid < 0) {
         fprintf(stderr, "shellx: fork failed: %s\n", strerror(errno));
     } else {
+        /* Parent: remember the child so we know one is in the
+         * foreground, then wait for it, tolerating EINTR from our
+         * own SIGINT handler firing while we wait. */
         foreground_child = pid;
         int status;
         pid_t w;
@@ -252,6 +311,7 @@ static int launch_external(char **args) {
 /* Dispatch a single already-tokenized command: builtin or external. */
 static int execute(char **args) {
     if (args[0] == NULL) {
+        /* Empty command. */
         return 1;
     }
 
@@ -262,6 +322,38 @@ static int execute(char **args) {
     }
 
     return launch_external(args);
+}
+
+/* Run a raw command line: tokenize then execute. Shared by normal
+ * input and by "#keyword" recall. */
+static void run_line(const char *line) {
+    char **args = tokenize_line(line);
+    execute(args);
+    free_tokens(args);
+}
+
+/* Handle a line starting with '#': treat the rest as a fuzzy keyword,
+ * look up the most recent matching history entry, print what was
+ * recalled, log + run it. If nothing matches, say so and do nothing. */
+static void handle_history_search(const char *line) {
+    const char *keyword = line + 1; /* skip '#' */
+    while (*keyword && isspace((unsigned char)*keyword)) keyword++;
+
+    if (*keyword == '\0') {
+        fprintf(stderr, "shellx: #<keyword> requires a keyword, e.g. #proj\n");
+        return;
+    }
+
+    char *match = find_history_match(keyword);
+    if (!match) {
+        printf("shellx: no history entry matching \"%s\"\n", keyword);
+        return;
+    }
+
+    printf("shellx: recalled: %s\n", match);
+    log_history(match);
+    run_line(match);
+    free(match);
 }
 
 /* ------------------------------------------------------------------ */
@@ -278,6 +370,7 @@ int main(void) {
 
     char *line;
     while ((line = readline("shellx> ")) != NULL) {
+        /* Trim leading/trailing whitespace for cleaner matching/logging. */
         char *start = line;
         while (*start && isspace((unsigned char)*start)) start++;
         size_t len = strlen(start);
@@ -291,14 +384,21 @@ int main(void) {
             continue;
         }
 
-        log_history(start);
-        char **args = tokenize_line(start);
-        execute(args);
-        free_tokens(args);
+        if (start[0] == '#') {
+            /* Fuzzy history search/recall - not logged as a raw
+             * "#keyword" entry itself; the recalled command is logged
+             * inside handle_history_search(). */
+            add_history(start);
+            handle_history_search(start);
+        } else {
+            log_history(start);
+            run_line(start);
+        }
 
         free(line);
     }
 
+    /* EOF (Ctrl+D) on the input stream. */
     printf("\n");
     return 0;
 }
