@@ -130,3 +130,7 @@ Type `exit` (optionally `exit <code>`) or press Ctrl+D to quit.
   (2) pressing Ctrl+C while a foreground child (`sleep 100`) is running
   kills the child (confirmed via `ps`) while the shell process survives
   and returns to the prompt, ready for the next command.
+
+## Notes
+
+Built as a focused, single-purpose tool - a minimal Unix shell built from scratch, nothing more, nothing less.
