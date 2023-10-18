@@ -402,3 +402,5 @@ int main(void) {
     printf("\n");
     return 0;
 }
+
+// Built incrementally - see git history for the development progression.
