@@ -134,3 +134,7 @@ Type `exit` (optionally `exit <code>`) or press Ctrl+D to quit.
 ## Notes
 
 Built as a focused, single-purpose tool - a minimal Unix shell built from scratch, nothing more, nothing less.
+
+## Troubleshooting
+
+If something doesn't run as expected, double-check you're using the dependency versions noted above and running the exact commands from the "Run it" section.
