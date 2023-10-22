@@ -138,3 +138,9 @@ Built as a focused, single-purpose tool - a minimal Unix shell built from scratc
 ## Troubleshooting
 
 If something doesn't run as expected, double-check you're using the dependency versions noted above and running the exact commands from the "Run it" section.
+
+## Possible Improvements
+
+- More test coverage
+- Better error messages for edge cases
+- A cleaner CLI/UI polish pass
