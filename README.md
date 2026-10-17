@@ -1,158 +1,104 @@
-# ShellX
+<p align="center">
+  <svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24"
+       fill="none" stroke="#4ade80" stroke-width="1.5"
+       stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="4 17 10 11 4 5"/>
+    <line x1="12" x2="20" y1="19" y2="19"/>
+  </svg>
+</p>
 
-A minimal Unix shell built from scratch in C. ShellX reads commands, parses
-them, and executes them using POSIX system calls — `cd`, `pwd`, `ls`, `exit`,
-and any external binary on your system.
+<h1 align="center">ShellX</h1>
+
+<p align="center">
+  <strong>A minimal Unix shell in C with persistent, timestamped history and <code>#keyword</code> fuzzy recall.</strong>
+</p>
+
+<p align="center">
+  <a href="https://shellx.akshatgcodes.in">
+    <img src="https://img.shields.io/badge/project_page-4ade80-4ade80?style=flat-square" alt="Project page">
+  </a>
+  <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C">
+  <img src="https://img.shields.io/badge/POSIX-111111?style=flat-square" alt="POSIX">
+  <img src="https://img.shields.io/badge/readline-111111?style=flat-square" alt="readline">
+  <img src="https://img.shields.io/badge/license-GPL--3.0-4ade80?style=flat-square" alt="License">
+</p>
+
+---
+
+## What is ShellX?
+
+ShellX is a small shell written from scratch with POSIX system calls. It reads a line, splits it into arguments, and either runs a builtin (`cd`, `pwd`, `exit`) or forks and `execvp`s any program on your `PATH`. What most mini-shells skip is history: every command is logged with a timestamp to `~/.shellx_history.txt`, ↑ recalls commands from previous sessions, and `#keyword` finds and re-runs the most recent command containing that text.
+
+> **Project page →** [shellx.akshatgcodes.in](https://shellx.akshatgcodes.in)
+> It's a shell, so it runs on your machine: `gcc -Wall shellx.c -o shellx -lreadline && ./shellx`
 
 ```
-$ ./shellx
-shellx> pwd
-/home/akshat
+shellx> cd ~/projects/portfolio
 shellx> ls
-projects  notes  Downloads
-shellx> #projects          # fuzzy history search
-shellx: recalled: cd projects
-shellx> exit
+shellx> #portf
+shellx: recalled: cd ~/projects/portfolio
 ```
 
-## X Factor: command history with fuzzy search
+---
 
-ShellX ships with a built-in **command history with fuzzy search**, the
-feature most mini-shell projects skip entirely:
+## What you get
 
-- **Persistent, timestamped log.** Every non-empty command you run is
-  appended to `~/.shellx_history.txt` as `[YYYY-MM-DD HH:MM:SS] <command>`,
-  regardless of whether it was typed directly or recalled via `#keyword`.
-  This file lives in your home directory, outside the git repo, so it is
-  intentionally **not** gitignored by the project (there's nothing to
-  ignore inside the repo — the file simply isn't there).
+- **Builtins + external commands** — `cd` (defaults to `$HOME`), `pwd` and `exit [code]` run in-process. Everything else goes through `fork()` → `execvp()` → `waitpid()`.
+- **Ctrl+C that behaves** — it stops the running child, not the shell. The child gets default signal handling right after `fork()`.
+- **Persistent history** — every command is appended as `[YYYY-MM-DD HH:MM:SS] cmd` and replayed into readline at startup, so ↑ works across sessions.
+- **`#keyword` recall** — substring match against history, newest wins, then the command is logged again and run.
 
-- **`#keyword` fuzzy search.** Typing `#keyword` at the prompt does **not**
-  run `keyword` as a command. Instead ShellX scans
-  `~/.shellx_history.txt` from oldest to newest, keeps track of the *last*
-  (most recent) entry whose command text contains `keyword` as a
-  substring, prints `shellx: recalled: <command>`, logs that command as a
-  new history entry, and immediately executes it — exactly like bash's
-  `!keyword` history expansion, but substring-based rather than
-  prefix-based (hence "fuzzy": `#proj` matches `cd my-projects`, `#cd`
-  matches the most recent command containing "cd" anywhere, etc.). If no
-  entry matches, it prints `shellx: no history entry matching "keyword"`
-  and does nothing further.
+---
 
-- **Up-arrow history scrolling.** ShellX links against the system's
-  **GNU readline API** (`#include <readline/readline.h>` /
-  `<readline/history.h>`, built with `-lreadline`) for line input instead
-  of hand-rolling raw terminal mode. This gets real, battle-tested
-  up/down-arrow history recall, left/right cursor movement, and line
-  editing for free. On startup ShellX also replays every command
-  previously logged in `~/.shellx_history.txt` into readline's in-memory
-  history (stripping the `[timestamp]` prefix first), so pressing ↑ can
-  recall commands from **previous sessions**, not just the current one.
+## Stack
 
-  **Platform note:** on Linux this links against real GNU Readline. On
-  macOS, the system ships **libedit**, a BSD-licensed library that
-  implements a readline-compatible API and headers at the same
-  `<readline/readline.h>` / `<readline/history.h>` paths — so
-  `gcc shellx.c -o shellx -lreadline` links and works out of the box on
-  macOS with **no extra installation** (verified on this machine: Apple
-  clang, macOS SDK, `-lreadline` resolves to
-  `/usr/lib/libedit.3.dylib`). If your system has neither libedit nor
-  GNU readline installed, install readline yourself:
-  - Debian/Ubuntu: `sudo apt-get install libreadline-dev`
-  - Fedora: `sudo dnf install readline-devel`
-  - macOS (only needed if you want real GNU readline instead of the
-    bundled libedit): `brew install readline`, then compile with
-    `gcc shellx.c -o shellx -Wall -I$(brew --prefix readline)/include -L$(brew --prefix readline)/lib -lreadline`
+| Layer | Tech |
+|---|---|
+| Language | C (POSIX: `fork`, `execvp`, `waitpid`, `sigaction`, `chdir`) |
+| Line editing | GNU readline on Linux, or the readline-compatible libedit on macOS |
+| Storage | `~/.shellx_history.txt` |
+| Project page | Next.js 16 on Vercel · GoDaddy DNS |
 
-  I chose readline/libedit over hand-rolled raw-mode arrow key handling
-  because it is dramatically less error-prone (correct handling of
-  terminal modes, line redraw, cursor movement, and signal interaction
-  is easy to get subtly wrong by hand) and it is verified working on
-  this build machine — see the Testing section below.
+---
 
-## Key concepts demonstrated
+## Engineering Decisions
 
-- **`fork()` + `execvp()`** — every external command (anything that isn't
-  `cd`, `pwd`, or `exit`) is run by forking a child process and calling
-  `execvp()` in the child, so `$PATH` lookup works exactly like a real
-  shell.
-- **`waitpid()`** — the parent blocks on `waitpid()` for the child to
-  finish before printing the next prompt, so commands run synchronously
-  in the foreground.
-- **Input parsing and tokenization** — `tokenize_line()` splits a raw
-  input line into a `NULL`-terminated `argv[]` array on whitespace,
-  growing its buffer dynamically for long command lines.
-- **Command history with file persistence** — see the X Factor section
-  above (`~/.shellx_history.txt`, `#keyword` search, readline history).
-- **Signal handling (`SIGINT`)** — the shell installs its own `SIGINT`
-  handler via `sigaction()` so Ctrl+C at the prompt never kills the shell
-  process itself; readline aborts the line being edited and redisplays
-  the prompt. When a foreground child is running, that same Ctrl+C is
-  delivered to the child too (it shares the shell's process group), and
-  because the child resets `SIGINT` to `SIG_DFL` immediately after
-  `fork()` (before `execvp()`), the child is killed as expected while the
-  shell keeps running and returns to the prompt once `waitpid()` reaps it.
+**Why readline instead of hand-rolled raw terminal mode?**
+Arrow keys, cursor movement, redraw and signal handling in raw mode are easy to get subtly wrong. readline (or libedit on macOS) gets them right, with no extra install on macOS.
 
-## Build and run
+**Why substring matching for `#keyword`?**
+bash's `!prefix` only matches the start of a command. `#proj` matching `cd my-projects` is what you actually remember.
 
-Platform: Linux/macOS only (POSIX).
+**Why a custom SIGINT handler in the shell?**
+Ctrl+C should kill the foreground program, not the shell. The parent handles SIGINT, and the child restores the default handler before `execvp`.
 
-```sh
-gcc shellx.c -o shellx -Wall -lreadline
-./shellx
-```
+**What would you do differently in v2?**
+Add pipes (`|`), redirection (`>`, `<`) and quoted arguments. Today the tokenizer splits on whitespace only.
 
-On macOS this compiles cleanly against the bundled libedit
-readline-compatible headers/library with no extra flags or installation
-(confirmed on this machine — Apple clang / macOS SDK). On Linux, install
-`libreadline-dev` (or equivalent) first if it isn't already present.
+---
 
-Type `exit` (optionally `exit <code>`) or press Ctrl+D to quit.
+## Docs
 
-## Testing performed
+| Document | Description |
+|---|---|
+| [PRD](docs/PRD.md) | Product requirements — goals, user stories, non-goals |
+| [Architecture](docs/ARCHITECTURE.md) | REPL, process model, history design |
+| [Decisions](docs/DECISIONS.md) | Every major technical decision and why |
+| [Setup](docs/SETUP.md) | Build on Linux / macOS and usage |
+| [Deploy](docs/DEPLOY.md) | How the project page is deployed |
+| [Contributing](CONTRIBUTING.md) | How to propose changes |
+| [Changelog](CHANGELOG.md) | What changed in each release |
+| [Security](SECURITY.md) | How to report a vulnerability |
 
-- Compiled with `gcc shellx.c -o shellx -Wall -lreadline`: zero warnings,
-  zero errors.
-- Scripted stdin session covering `pwd`, `ls`, `cd` into a real directory,
-  an external command (`echo`), and `exit`: ran correctly with no crashes,
-  and `~/.shellx_history.txt` was populated with correctly timestamped
-  entries for each command.
-- `#keyword` fuzzy search: after running several commands including
-  `echo building shellx project` and `cd /tmp/shellx_test_projects`,
-  `#project` correctly recalled and re-ran the most recent command
-  containing "project"; `#tmp` correctly recalled and re-ran `cd /tmp`
-  (verified the working directory actually changed afterward); a
-  nonexistent keyword printed a clean "no history entry matching" message
-  instead of crashing.
-- `SIGINT` handling: using a pseudo-terminal harness, confirmed that (1)
-  pressing Ctrl+C at an idle prompt does not exit the shell — it
-  redisplays the prompt and the shell continues accepting commands, and
-  (2) pressing Ctrl+C while a foreground child (`sleep 100`) is running
-  kills the child (confirmed via `ps`) while the shell process survives
-  and returns to the prompt, ready for the next command.
+---
 
-## Notes
+<div align="center">
 
-Built as a focused, single-purpose tool - a minimal Unix shell built from scratch, nothing more, nothing less.
+<h3>Akshat Gupta</h3>
 
-## Troubleshooting
+<a href="https://akshatgcodes.in"><img src="https://img.shields.io/badge/Website-akshatgcodes.in-111111?style=flat-square&logo=googlechrome&logoColor=white" alt="Website"></a>
+<a href="https://linkedin.com/in/akshatgcodes"><img src="https://img.shields.io/badge/LinkedIn-akshatgcodes-0A66C2?style=flat-square" alt="LinkedIn"></a>
+<a href="https://github.com/akshatgcodes"><img src="https://img.shields.io/badge/GitHub-akshatgcodes-181717?style=flat-square&logo=github&logoColor=white" alt="GitHub"></a>
+<a href="mailto:akshatgcodes@gmail.com"><img src="https://img.shields.io/badge/Email-akshatgcodes%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white" alt="Email"></a>
 
-If something doesn't run as expected, double-check you're using the dependency versions noted above and running the exact commands from the "Run it" section.
-
-## Possible Improvements
-
-- More test coverage
-- Better error messages for edge cases
-- A cleaner CLI/UI polish pass
-
-## Acknowledgements
-
-Thanks to the open-source libraries this project leans on - see the dependency list above for the full set.
-
-## License
-
-GPLv3 - see [LICENSE](LICENSE) for details.
-
-## Testing
-
-Manually tested via the sample commands above; no automated test suite yet.
+</div>
