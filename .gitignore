@@ -6,3 +6,10 @@ shellx
 
 # Editor/OS cruft
 .DS_Store
+
+# Env files (keep the example)
+.env
+.env.local
+.env.*.local
+.env*
+!.env.example
